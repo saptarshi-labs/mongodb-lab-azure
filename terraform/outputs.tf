@@ -30,6 +30,10 @@ output "all_processes" {
   ]...)
 }
 
+output "resource_group_name" {
+  value = azurerm_resource_group.rg.name
+}
+
 output "ssh_private_key_path" {
   value = local_file.private_key.filename
 }

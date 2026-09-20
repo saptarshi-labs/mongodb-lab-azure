@@ -10,7 +10,7 @@ resource "local_file" "private_key" {
 }
 
 locals {
-  vm_defs = {
+  vm_defs_all = {
     # Set1 — local SCRAM auth only
     "VM1" = { set = "set1", auth_mode = "local", role = "standalone",     replset = null,             ports = [27017] }
     "VM2" = { set = "set1", auth_mode = "local", role = "replica_member", replset = "set1-rs0",       ports = [27017, 27018, 27019] }
@@ -26,6 +26,11 @@ locals {
     "VM10" = { set = "set2", auth_mode = "ldap", role = "configsvr",      replset = "set2-configRS",  ports = [27017, 27018, 27019] }
     "VM11" = { set = "set2", auth_mode = "ldap", role = "shardsvr",       replset = "set2-shard0RS",  ports = [27017, 27018, 27019] }
     "VM12" = { set = "set2", auth_mode = "ldap", role = "shardsvr",       replset = "set2-shard1RS",  ports = [27017, 27018, 27019] }
+  }
+
+  # while deploy_set2 = false, only Set1's 6 VMs get created
+  vm_defs = var.deploy_set2 ? local.vm_defs_all : {
+    for k, v in local.vm_defs_all : k => v if v.set == "set1"
   }
 }
 

@@ -16,11 +16,11 @@ variable "admin_source_cidr" {
 }
 
 variable "vm_size" {
-  default = "Standard_B2ms"  # 2 vCPU / 8 GB, needed for VMs running 3 mongod processes
+  default = "Standard_B1ms"  # 1 vCPU / 2 GB — fits 6 VMs inside a 10 vCPU quota
 }
 
 variable "dc_vm_size" {
-  default = "Standard_D2s_v3"  # AD DS wants more headroom than a burstable B-series
+  default = "Standard_D2s_v3"  # unused while deploy_ad = false
 }
 
 variable "vnet_address_space" {
@@ -44,11 +44,23 @@ variable "ad_domain_netbios" {
 }
 
 variable "ad_safe_mode_password" {
-  description = "DSRM password for the new forest. Set via TF_VAR_ad_safe_mode_password, not committed."
+  description = "DSRM password for the new forest. Set via TF_VAR_ad_safe_mode_password. Unused while deploy_ad = false, but still required by Terraform since it has no default."
   type        = string
   sensitive   = true
 }
 
 variable "dc_private_ip" {
   default = "10.60.1.250"
+}
+
+variable "deploy_set2" {
+  description = "Set true once the vCPU quota increase clears. Deploys VM7-VM12."
+  type        = bool
+  default     = false
+}
+
+variable "deploy_ad" {
+  description = "Set true once the vCPU quota increase clears. Deploys DC1 and runs AD DS install."
+  type        = bool
+  default     = false
 }

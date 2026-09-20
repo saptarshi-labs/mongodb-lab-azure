@@ -4,7 +4,7 @@ set -euo pipefail
 cd ../terraform
 ALL_VMS_JSON="$(terraform output -json all_vms)"
 ALL_PROC_JSON="$(terraform output -json all_processes)"
-DC1_IP="$(terraform output -raw dc1_private_ip)"
+DC1_IP="$(terraform output -raw dc1_private_ip 2>/dev/null || echo "")"
 cd - >/dev/null
 
 SSHKEY="$(pwd)/../state/lab_ssh_key.pem"
@@ -41,7 +41,7 @@ echo "$ALL_PROC_JSON" | jq -r 'to_entries[] | @base64' | while read -r row; do
 
   ldap_block=""
   auth_mech_line=""
-  if [ "$auth_mode" = "ldap" ] && [ "$role" != "standalone" ]; then
+  if [ "$auth_mode" = "ldap" ] && [ "$role" != "standalone" ] && [ -n "$DC1_IP" ]; then
     auth_mech_line="  authenticationMechanisms: [\"SCRAM-SHA-1\",\"PLAIN\"]"
     ldap_block=$(cat << EOF
   ldap:
@@ -89,6 +89,14 @@ EOF
       echo "  port: ${port}"
       echo "storage:"
       echo "  dbPath: /var/lib/mongodb-lab/${port}"
+      # multi-process hosts (every non-standalone role in this topology runs
+      # 3 mongod processes on one small VM) need a small explicit cache,
+      # otherwise each process assumes it owns the whole box and OOMs
+      if [ "$role" != "standalone" ]; then
+        echo "  wiredTiger:"
+        echo "    engineConfig:"
+        echo "      cacheSizeGB: 0.25"
+      fi
       echo "systemLog:"
       echo "  destination: file"
       echo "  path: /var/log/mongodb-lab/mongod-${port}.log"
@@ -118,4 +126,4 @@ EOF
   fi
 done
 
-echo "all mongod processes configured and started for both sets. mongos config written but not started, see 04."
+echo "all mongod processes configured and started. mongos config written but not started, see 04."
