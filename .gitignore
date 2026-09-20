@@ -1,0 +1,21 @@
+# secrets and generated credentials, never commit
+state/
+*.pem
+*.key
+mongodb-keyfile
+*-mongodb-keyfile
+
+# terraform state and local caches, both contain secrets in plaintext
+terraform/.terraform/
+terraform/.terraform.lock.hcl
+terraform/*.tfstate
+terraform/*.tfstate.backup
+terraform/*.tfvars
+terraform/crash.log
+
+# generated at runtime, not source
+mongodb-discovery/targets.csv
+mongodb-discovery/out/
+
+# OS noise
+.DS_Store
