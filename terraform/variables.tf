@@ -10,13 +10,16 @@ variable "admin_username" {
   default = "labadmin"
 }
 
-# CIDR allowed to SSH/RDP/WinRM in, e.g. "203.0.113.4/32" — your own public IP.
+# CIDR allowed to SSH/RDP/WinRM in. Defaulted to your current IP, but this
+# address is dynamic — re-check with (Invoke-RestMethod -Uri "https://api.ipify.org")
+# before each session and override with -var if it has changed.
 variable "admin_source_cidr" {
-  type = string
+  type    = string
+  default = "122.171.17.178/32"
 }
 
 variable "vm_size" {
-  default = "Standard_B2s"  # 2 vCPU / 4 GB, 5 VMs = 10 vCPU, fits current quota with no increase
+  default = "Standard_D2s_v3"  # 2 vCPU / 8 GB, 5 VMs = 10 vCPU, confirmed quota, mainstream family
 }
 
 variable "dc_vm_size" {
