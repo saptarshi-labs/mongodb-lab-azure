@@ -16,7 +16,7 @@ variable "admin_source_cidr" {
 }
 
 variable "vm_size" {
-  default = "Standard_B1ms"  # 1 vCPU / 2 GB — fits 6 VMs inside a 10 vCPU quota
+  default = "Standard_B2s"  # 2 vCPU / 4 GB, 5 VMs = 10 vCPU, fits current quota with no increase
 }
 
 variable "dc_vm_size" {

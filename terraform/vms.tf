@@ -17,7 +17,6 @@ locals {
     "VM3" = { set = "set1", auth_mode = "local", role = "mongos",         replset = null,             ports = [27020] }
     "VM4" = { set = "set1", auth_mode = "local", role = "configsvr",      replset = "set1-configRS",  ports = [27017, 27018, 27019] }
     "VM5" = { set = "set1", auth_mode = "local", role = "shardsvr",       replset = "set1-shard0RS",  ports = [27017, 27018, 27019] }
-    "VM6" = { set = "set1", auth_mode = "local", role = "shardsvr",       replset = "set1-shard1RS",  ports = [27017, 27018, 27019] }
 
     # Set2 — external auth against DC1 (AD/LDAP)
     "VM7"  = { set = "set2", auth_mode = "ldap", role = "standalone",     replset = null,             ports = [27017] }
@@ -28,7 +27,7 @@ locals {
     "VM12" = { set = "set2", auth_mode = "ldap", role = "shardsvr",       replset = "set2-shard1RS",  ports = [27017, 27018, 27019] }
   }
 
-  # while deploy_set2 = false, only Set1's 6 VMs get created
+  # while deploy_set2 = false, only Set1's 5 VMs get created
   vm_defs = var.deploy_set2 ? local.vm_defs_all : {
     for k, v in local.vm_defs_all : k => v if v.set == "set1"
   }
