@@ -1,44 +1,31 @@
 #!/usr/bin/env bash
+# 03_create_admin_user.sh
+# Creates labMongoAdmin (root@admin) on the standalone, rs0, and
+# configRS/shard0RS entry points for every deployed set.
 set -euo pipefail
 
-cd ../terraform
-ALL_PROC_JSON="$(terraform output -json all_processes)"
-cd - >/dev/null
+SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
+ADMIN_PASSWORD="${LAB_MONGO_ADMIN_PASSWORD:?set LAB_MONGO_ADMIN_PASSWORD before running}"
 
-SSHKEY="$(pwd)/../state/lab_ssh_key.pem"
-ADMIN_USER="labadmin"
+terraform -chdir="$SCRIPT_DIR/../terraform" output -json all_processes > /tmp/all_processes.json
 
-read -rsp "Set password for lab Mongo admin user 'labMongoAdmin' (used on both sets): " MONGO_ADMIN_PASS
-echo
+for set_name in set1 set2 set3; do
+  entry_points=$(jq -r --arg s "$set_name" \
+    'to_entries[] | select(.value.set == $s and (.value.role == "standalone" or (.value.role == "rs0" and .value.port == 27017) or (.value.role == "shardsvr" and .value.port == 27017))) | .value.public_ip + ":" + (.value.port|tostring)' \
+    /tmp/all_processes.json)
 
-create_admin_on() {
-  local ip="$1" port="$2"
-  ssh -i "$SSHKEY" -o StrictHostKeyChecking=no "${ADMIN_USER}@${ip}" "
-    mongosh --port ${port} --quiet --eval '
-      db.getSiblingDB(\"admin\").createUser({
-        user: \"labMongoAdmin\",
-        pwd: \"${MONGO_ADMIN_PASS}\",
-        roles: [{ role: \"root\", db: \"admin\" }]
-      })
-    '
-  "
-}
+  [ -z "$entry_points" ] && { echo "[skip] $set_name not deployed"; continue; }
 
-for set in set1 set2; do
-  standalone_ip=$(echo "$ALL_PROC_JSON" | jq -r --arg s "$set" '[.[] | select(.set==$s and .role=="standalone")][0].public_ip')
-  standalone_port=$(echo "$ALL_PROC_JSON" | jq -r --arg s "$set" '[.[] | select(.set==$s and .role=="standalone")][0].port')
-  echo "creating admin on ${set} standalone $standalone_ip:$standalone_port"
-  create_admin_on "$standalone_ip" "$standalone_port"
-
-  rs0_ip=$(echo "$ALL_PROC_JSON" | jq -r --arg rs "${set}-rs0" '[.[] | select(.replset==$rs)][0].public_ip')
-  rs0_port=$(echo "$ALL_PROC_JSON" | jq -r --arg rs "${set}-rs0" '[.[] | select(.replset==$rs)][0].port')
-  echo "creating admin on ${set}-rs0 $rs0_ip:$rs0_port"
-  create_admin_on "$rs0_ip" "$rs0_port"
-
-  cfg_ip=$(echo "$ALL_PROC_JSON" | jq -r --arg rs "${set}-configRS" '[.[] | select(.replset==$rs)][0].public_ip')
-  cfg_port=$(echo "$ALL_PROC_JSON" | jq -r --arg rs "${set}-configRS" '[.[] | select(.replset==$rs)][0].port')
-  echo "creating admin on ${set}-configRS $cfg_ip:$cfg_port"
-  create_admin_on "$cfg_ip" "$cfg_port"
+  echo "$entry_points" | while read -r target; do
+    host="${target%%:*}"
+    port="${target##*:}"
+    echo "=== creating labMongoAdmin on $set_name ($host:$port) ==="
+    mongosh --host "$host" --port "$port" --eval "
+      db.getSiblingDB('admin').createUser({
+        user: 'labMongoAdmin',
+        pwd: '$ADMIN_PASSWORD',
+        roles: [{ role: 'root', db: 'admin' }]
+      });
+    " || echo "  [warn] user may already exist on $host:$port"
+  done
 done
-
-echo "admin user created on both sets' standalone, rs0, and configRS."

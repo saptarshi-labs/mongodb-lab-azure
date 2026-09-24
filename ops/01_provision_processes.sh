@@ -1,129 +1,99 @@
 #!/usr/bin/env bash
+# 01_provision_processes.sh
+# Pushes the correct set's keyfile to each VM and generates per-process
+# mongod/mongos config, branching on role (standalone/rs0/configsvr/
+# shardsvr/mongos) and auth_mode (local/ldap/kerberos).
 set -euo pipefail
 
-cd ../terraform
-ALL_VMS_JSON="$(terraform output -json all_vms)"
-ALL_PROC_JSON="$(terraform output -json all_processes)"
-DC1_IP="$(terraform output -raw dc1_private_ip 2>/dev/null || echo "")"
-cd - >/dev/null
+SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
+STATE_DIR="$SCRIPT_DIR/../state"
+SSH_USER="${SSH_USER:-labadmin}"
+SSH_OPTS="${SSH_OPTS:--o StrictHostKeyChecking=accept-new}"
+DC1_IP="${DC1_IP:-}"   # set this once DC1 is up; leave empty to skip LDAP/Kerberos blocks
 
-SSHKEY="$(pwd)/../state/lab_ssh_key.pem"
-ADMIN_USER="labadmin"
-LDAP_BIND_DN="CN=svc_ldapbind,OU=ServiceAccounts,OU=MongoDB,DC=mongolab,DC=local"
-LDAP_BIND_PW="SvcLdapBind2026!"   # matches 02_create_ad_objects.ps1 — move to a secret store beyond lab use
+terraform -chdir="$SCRIPT_DIR/../terraform" output -json all_processes > /tmp/all_processes.json
 
-ssh_do() { ssh -i "$SSHKEY" -o StrictHostKeyChecking=no "${ADMIN_USER}@$1" "${@:2}"; }
-scp_do() { scp -i "$SSHKEY" -o StrictHostKeyChecking=no "$1" "${ADMIN_USER}@$2:$3"; }
+jq -r 'keys[]' /tmp/all_processes.json | while read -r proc_key; do
+  proc=$(jq -r ".\"$proc_key\"" /tmp/all_processes.json)
+  set_name=$(echo "$proc" | jq -r '.set')
+  auth_mode=$(echo "$proc" | jq -r '.auth_mode')
+  role=$(echo "$proc" | jq -r '.role')
+  replset=$(echo "$proc" | jq -r '.replset')
+  public_ip=$(echo "$proc" | jq -r '.public_ip')
+  port=$(echo "$proc" | jq -r '.port')
 
-echo "$ALL_VMS_JSON" | jq -r 'to_entries[] | [.key, .value.set, .value.public_ip] | @tsv' | while IFS=$'\t' read -r vm set ip; do
-  keyfile="../state/${set}-mongodb-keyfile"
-  echo "pushing $keyfile to $vm ($ip)"
-  scp_do "$keyfile" "$ip" "/tmp/mongodb-keyfile"
-  ssh_do "$ip" '
-    sudo mv /tmp/mongodb-keyfile /etc/mongodb-lab/mongodb-keyfile
-    sudo chown mongodb:mongodb /etc/mongodb-lab/mongodb-keyfile
-    sudo chmod 400 /etc/mongodb-lab/mongodb-keyfile
-  '
-done
+  echo "=== $proc_key ($set_name, $role, port $port) ==="
 
-echo "$ALL_PROC_JSON" | jq -r 'to_entries[] | @base64' | while read -r row; do
-  entry() { echo "$row" | base64 --decode | jq -r "$1"; }
-  proc_name=$(entry '.key')
-  role=$(entry '.value.role')
-  replset=$(entry '.value.replset')
-  port=$(entry '.value.port')
-  public_ip=$(entry '.value.public_ip')
-  auth_mode=$(entry '.value.auth_mode')
+  keyfile="$STATE_DIR/${set_name}-mongodb-keyfile"
+  scp $SSH_OPTS "$keyfile" "${SSH_USER}@${public_ip}:/tmp/mongodb-keyfile"
+  ssh $SSH_OPTS "${SSH_USER}@${public_ip}" \
+    "sudo mv /tmp/mongodb-keyfile /etc/mongodb-keyfile && sudo chown mongod:mongod /etc/mongodb-keyfile && sudo chmod 400 /etc/mongodb-keyfile"
 
-  echo "== $proc_name ($role, $auth_mode) on $public_ip:$port =="
+  config_path="/etc/mongod.conf"
+  [ "$role" = "mongos" ] && config_path="/etc/mongos.conf"
 
-  ssh_do "$public_ip" "sudo mkdir -p /var/lib/mongodb-lab/${port} && sudo chown mongodb:mongodb /var/lib/mongodb-lab/${port}"
-
-  ldap_block=""
-  auth_mech_line=""
-  if [ "$auth_mode" = "ldap" ] && [ "$role" != "standalone" ] && [ -n "$DC1_IP" ]; then
-    auth_mech_line="  authenticationMechanisms: [\"SCRAM-SHA-1\",\"PLAIN\"]"
-    ldap_block=$(cat << EOF
-  ldap:
-    servers: "${DC1_IP}:389"
-    transportSecurity: none
-    bind:
-      queryUser: "${LDAP_BIND_DN}"
-      queryPassword: "${LDAP_BIND_PW}"
-    userToDNMapping: '[{match: "(.+)", substitution: "CN={0},OU=Users,OU=MongoDB,DC=mongolab,DC=local"}]'
-    authz:
-      queryTemplate: "OU=MongoDB,DC=mongolab,DC=local??sub?(&(objectClass=user)(sAMAccountName={USER}))"
+  # --- base config, branch by role ---
+  base_config=$(cat <<EOF
+systemLog:
+  destination: file
+  path: /var/log/mongodb/$([ "$role" = "mongos" ] && echo mongos.log || echo mongod.log)
+  logAppend: true
+net:
+  port: $port
+  bindIp: 0.0.0.0
+security:
+  clusterAuthMode: keyFile
+  keyFile: /etc/mongodb-keyfile
 EOF
 )
-  fi
-
-  if [ "$role" = "mongos" ]; then
-    {
-      echo "net:"
-      echo "  bindIp: 0.0.0.0"
-      echo "  port: ${port}"
-      echo "systemLog:"
-      echo "  destination: file"
-      echo "  path: /var/log/mongodb-lab/mongos-${port}.log"
-      echo "  logAppend: true"
-      echo "security:"
-      echo "  keyFile: /etc/mongodb-lab/mongodb-keyfile"
-      [ -n "$auth_mech_line" ] && echo "$auth_mech_line"
-      [ -n "$ldap_block" ] && echo "$ldap_block"
-    } > /tmp/proc.conf
-    remote_name="mongos-${port}.conf"
-    service="mongos@${port}"
-  else
-    sharding_block=""
-    [ "$role" = "configsvr" ] && sharding_block=$'sharding:\n  clusterRole: configsvr'
-    [ "$role" = "shardsvr" ]  && sharding_block=$'sharding:\n  clusterRole: shardsvr'
-
-    repl_block=""
-    if [ "$role" != "standalone" ]; then
-      repl_block=$'replication:\n  replSetName: '"${replset}"
-    fi
-
-    {
-      echo "net:"
-      echo "  bindIp: 0.0.0.0"
-      echo "  port: ${port}"
-      echo "storage:"
-      echo "  dbPath: /var/lib/mongodb-lab/${port}"
-      # multi-process hosts (every non-standalone role in this topology runs
-      # 3 mongod processes on one small VM) need a small explicit cache,
-      # otherwise each process assumes it owns the whole box and OOMs
-      if [ "$role" != "standalone" ]; then
-        echo "  wiredTiger:"
-        echo "    engineConfig:"
-        echo "      cacheSizeGB: 0.25"
-      fi
-      echo "systemLog:"
-      echo "  destination: file"
-      echo "  path: /var/log/mongodb-lab/mongod-${port}.log"
-      echo "  logAppend: true"
-      [ -n "$repl_block" ] && echo "$repl_block"
-      [ -n "$sharding_block" ] && echo "$sharding_block"
-      echo "security:"
-      if [ "$role" = "standalone" ]; then
-        echo "  authorization: enabled"
-      else
-        echo "  keyFile: /etc/mongodb-lab/mongodb-keyfile"
-      fi
-      [ -n "$auth_mech_line" ] && echo "$auth_mech_line"
-      [ -n "$ldap_block" ] && echo "$ldap_block"
-      echo "processManagement:"
-      echo "  fork: false"
-    } > /tmp/proc.conf
-    remote_name="mongod-${port}.conf"
-    service="mongod@${port}"
-  fi
-
-  scp_do /tmp/proc.conf "$public_ip" "/tmp/${remote_name}"
-  ssh_do "$public_ip" "sudo mv /tmp/${remote_name} /etc/mongodb-lab/${remote_name} && sudo systemctl daemon-reload"
+  [ "$role" != "mongos" ] && base_config="$base_config
+  authorization: enabled"
 
   if [ "$role" != "mongos" ]; then
-    ssh_do "$public_ip" "sudo systemctl enable ${service} && sudo systemctl restart ${service}"
+    base_config="storage:
+  dbPath: /var/lib/mongodb
+$base_config"
   fi
-done
 
-echo "all mongod processes configured and started. mongos config written but not started, see 04."
+  case "$role" in
+    rs0)       base_config="$base_config
+replication:
+  replSetName: $replset" ;;
+    configsvr) base_config="$base_config
+replication:
+  replSetName: $replset
+sharding:
+  clusterRole: configsvr" ;;
+    shardsvr)  base_config="$base_config
+replication:
+  replSetName: $replset
+sharding:
+  clusterRole: shardsvr" ;;
+    mongos)    base_config="$base_config
+sharding:
+  configDB: ${set_name}-configRS/$(echo "$proc" | jq -r '.private_ip'):27017,$(echo "$proc" | jq -r '.private_ip'):27018,$(echo "$proc" | jq -r '.private_ip'):27019" ;;
+  esac
+
+  # --- auth_mode branches ---
+  if [ "$auth_mode" = "ldap" ] && [ -n "$DC1_IP" ]; then
+    base_config="$base_config
+  authenticationMechanisms: [\"SCRAM-SHA-1\", \"PLAIN\"]
+  ldap:
+    servers: \"${DC1_IP}:389\"
+    transportSecurity: none
+    bind:
+      method: simple
+      queryUser: \"CN=svc_ldapbind,OU=ServiceAccounts,OU=MongoDB,DC=mongolab,DC=local\"
+    authz:
+      queryTemplate: \"{USER}?memberOf?base\""
+  elif [ "$auth_mode" = "kerberos" ] && [ -n "$DC1_IP" ]; then
+    base_config="$base_config
+  authenticationMechanisms: [\"SCRAM-SHA-1\", \"GSSAPI\"]"
+    # krb5.conf and /etc/mongod.keytab are pushed separately by
+    # ops/08_distribute_keytabs.ps1, after ad-scripts/03_configure_kerberos.ps1
+    # has generated the keytabs on DC1. This script only sets the mechanism.
+  fi
+
+  echo "$base_config" | ssh $SSH_OPTS "${SSH_USER}@${public_ip}" "sudo tee $config_path > /dev/null"
+  ssh $SSH_OPTS "${SSH_USER}@${public_ip}" "sudo systemctl restart $([ "$role" = "mongos" ] && echo mongos || echo mongod)"
+done

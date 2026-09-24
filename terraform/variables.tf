@@ -1,69 +1,84 @@
 variable "location" {
-  default = "southindia"
+  description = "Azure region for the lab"
+  type        = string
+  default     = "southindia"
 }
 
 variable "resource_group_name" {
-  default = "mongodb-discovery-lab-rg"
+  description = "Resource group name for the lab"
+  type        = string
+  default     = "mongodb-discovery-lab-rg"
 }
 
 variable "admin_username" {
-  default = "labadmin"
+  description = "Local admin username for all VMs"
+  type        = string
+  default     = "labadmin"
 }
 
-# CIDR allowed to SSH/RDP/WinRM in. Defaulted to your current IP, but this
-# address is dynamic — re-check with (Invoke-RestMethod -Uri "https://api.ipify.org")
-# before each session and override with -var if it has changed.
 variable "admin_source_cidr" {
-  type    = string
-  default = "122.171.17.178/32"
+  description = "Your current public IP. Restricts SSH/RDP/NSG rules to just you."
+  type        = string
+  default     = "122.171.17.112/32"
 }
 
 variable "vm_size" {
-  default = "Standard_D2s_v3"  # 2 vCPU / 8 GB, 5 VMs = 10 vCPU, confirmed quota, mainstream family
+  description = "VM size for all Linux mongod/mongos VMs across Set1, Set2, Set3"
+  type        = string
+  default     = "Standard_D2alds_v6"
 }
 
 variable "dc_vm_size" {
-  default = "Standard_D2s_v3"  # unused while deploy_ad = false
-}
-
-variable "vnet_address_space" {
-  default = "10.60.0.0/16"
-}
-
-variable "subnet_address_prefix" {
-  default = "10.60.1.0/24"
+  description = "VM size for the Windows AD Domain Controller (DC1). NOT yet validated in southindia, test with the same 3-step CLI check before applying."
+  type        = string
+  default     = "Standard_D2s_v3"
 }
 
 variable "mongodb_version" {
-  default = "8.0"
+  description = "MongoDB Enterprise version to install"
+  type        = string
+  default     = "8.0"
 }
 
 variable "ad_domain_fqdn" {
-  default = "mongolab.local"
+  description = "AD domain FQDN"
+  type        = string
+  default     = "mongolab.local"
 }
 
 variable "ad_domain_netbios" {
-  default = "MONGOLAB"
+  description = "AD domain NetBIOS name"
+  type        = string
+  default     = "MONGOLAB"
 }
 
 variable "ad_safe_mode_password" {
-  description = "DSRM password for the new forest. Set via TF_VAR_ad_safe_mode_password. Unused while deploy_ad = false, but still required by Terraform since it has no default."
+  description = "AD DS Safe Mode admin password. Set via TF_VAR_ad_safe_mode_password, never commit a real value here."
   type        = string
   sensitive   = true
+  default     = "unused-for-now"
 }
 
 variable "dc_private_ip" {
-  default = "10.60.1.250"
+  description = "Static private IP for DC1. Also acts as the KDC once deploy_set3 is enabled, no separate VM needed for Kerberos."
+  type        = string
+  default     = "10.60.1.250"
 }
 
-variable "deploy_set2" {
-  description = "Set true once the vCPU quota increase clears. Deploys VM7-VM12."
+variable "deploy_ad" {
+  description = "Deploy the DC1 Windows AD Domain Controller. Required if deploy_set2 or deploy_set3 is true."
   type        = bool
   default     = false
 }
 
-variable "deploy_ad" {
-  description = "Set true once the vCPU quota increase clears. Deploys DC1 and runs AD DS install."
+variable "deploy_set2" {
+  description = "Deploy Set2 (external authentication via LDAP)"
+  type        = bool
+  default     = false
+}
+
+variable "deploy_set3" {
+  description = "Deploy Set3 (external authentication via Kerberos). Requires deploy_ad = true."
   type        = bool
   default     = false
 }

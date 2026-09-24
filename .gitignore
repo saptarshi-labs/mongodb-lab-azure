@@ -19,3 +19,7 @@ mongodb-discovery/out/
 
 # OS noise
 .DS_Store
+
+*.keytab
+keytabs/
+terraform/*.tfstate*

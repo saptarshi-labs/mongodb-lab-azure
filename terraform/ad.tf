@@ -1,11 +1,15 @@
+# ad.tf
+# DC1: Windows Server Active Directory Domain Controller for the lab.
+# Serves as the LDAP server for Set2 and, once Kerberos is configured on
+# it via ad-scripts/03_configure_kerberos.ps1, as the KDC for Set3.
+# Entirely gated behind var.deploy_ad, so a Set1-only run never
+# provisions it.
+
 resource "random_password" "ad_admin_password" {
-  count       = var.deploy_ad ? 1 : 0
-  length      = 20
-  special     = true
-  min_upper   = 2
-  min_lower   = 2
-  min_numeric = 2
-  min_special = 2
+  count            = var.deploy_ad ? 1 : 0
+  length           = 20
+  special          = true
+  override_special = "!@#$%*()-_=+"
 }
 
 resource "local_file" "ad_admin_password" {
@@ -17,18 +21,18 @@ resource "local_file" "ad_admin_password" {
 
 resource "azurerm_public_ip" "dc1_pip" {
   count               = var.deploy_ad ? 1 : 0
-  name                = "DC1-pip"
-  location            = azurerm_resource_group.rg.location
+  name                = "dc1-pip"
   resource_group_name = azurerm_resource_group.rg.name
+  location            = var.location
   allocation_method   = "Static"
   sku                 = "Standard"
 }
 
 resource "azurerm_network_interface" "dc1_nic" {
   count               = var.deploy_ad ? 1 : 0
-  name                = "DC1-nic"
-  location            = azurerm_resource_group.rg.location
+  name                = "dc1-nic"
   resource_group_name = azurerm_resource_group.rg.name
+  location            = var.location
 
   ip_configuration {
     name                          = "internal"
@@ -39,13 +43,19 @@ resource "azurerm_network_interface" "dc1_nic" {
   }
 }
 
+resource "azurerm_network_interface_security_group_association" "dc1_nic_nsg" {
+  count                     = var.deploy_ad ? 1 : 0
+  network_interface_id      = azurerm_network_interface.dc1_nic[0].id
+  network_security_group_id = azurerm_network_security_group.nsg.id
+}
+
 resource "azurerm_windows_virtual_machine" "dc1" {
   count               = var.deploy_ad ? 1 : 0
-  name                = "DC1"
-  location            = azurerm_resource_group.rg.location
+  name                = "dc1"
   resource_group_name = azurerm_resource_group.rg.name
+  location            = var.location
   size                = var.dc_vm_size
-  admin_username      = "labadmin"
+  admin_username      = var.admin_username
   admin_password      = random_password.ad_admin_password[0].result
 
   network_interface_ids = [azurerm_network_interface.dc1_nic[0].id]
@@ -61,11 +71,12 @@ resource "azurerm_windows_virtual_machine" "dc1" {
     sku       = "2022-datacenter-azure-edition"
     version   = "latest"
   }
+
+  tags = {
+    role = "domain-controller"
+  }
 }
 
-# Stage 1 only: install AD DS, promote the forest, reboot. Stage 2
-# (ad-scripts/02_create_ad_objects.ps1) is run manually once DC1 is
-# confirmed back up after the reboot.
 resource "azurerm_virtual_machine_extension" "dc1_install_adds" {
   count                = var.deploy_ad ? 1 : 0
   name                 = "install-adds"
@@ -74,25 +85,23 @@ resource "azurerm_virtual_machine_extension" "dc1_install_adds" {
   type                 = "CustomScriptExtension"
   type_handler_version = "1.10"
 
-  protected_settings = jsonencode({
-    commandToExecute = "powershell -ExecutionPolicy Unrestricted -EncodedCommand ${textencodebase64(templatefile("${path.module}/ad-scripts/01_install_adds.ps1", {
+  settings = jsonencode({
+    commandToExecute = "powershell -EncodedCommand ${base64encode(templatefile("${path.module}/ad-scripts/01_install_adds.ps1", {
       domain_fqdn        = var.ad_domain_fqdn
       domain_netbios     = var.ad_domain_netbios
       safe_mode_password = var.ad_safe_mode_password
-    }), "UTF-16LE")}"
+    }))}"
   })
 
   depends_on = [azurerm_windows_virtual_machine.dc1]
 }
 
-output "dc1_private_ip" {
-  value = var.deploy_ad ? azurerm_network_interface.dc1_nic[0].private_ip_address : null
-}
+# Fails terraform plan early if Set2 or Set3 is requested without the AD DC,
+# rather than failing halfway through apply.
+resource "null_resource" "ad_dependency_check" {
+  count = (var.deploy_set2 || var.deploy_set3) && !var.deploy_ad ? 1 : 0
 
-output "dc1_public_ip" {
-  value = var.deploy_ad ? azurerm_public_ip.dc1_pip[0].ip_address : null
-}
-
-output "dc1_admin_password_file" {
-  value = var.deploy_ad ? local_file.ad_admin_password[0].filename : null
+  provisioner "local-exec" {
+    command = "echo 'ERROR: deploy_set2 or deploy_set3 is true but deploy_ad is false. Both require the AD DC.' && exit 1"
+  }
 }
